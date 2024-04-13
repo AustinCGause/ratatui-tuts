@@ -1,95 +1,91 @@
-use std::io;
-
+use color_eyre::{
+    eyre::{bail, WrapErr},
+    Result,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     prelude::*,
     symbols::border,
-    widgets::{block::*, *},
+    widgets::{
+        block::{Position, Title},
+        *,
+    },
 };
 
+mod errors;
 mod tui;
 
-// Main method with initializes terminal with help of helper module, begins the main loop with the
-// App's run method, and then calls the tui restore helper method to effectively shutdown the
-// application and return terminal control back to the user and then app_result is returned
-fn main() -> io::Result<()> {
+fn main() -> Result<()> {
+    errors::install_hooks()?;
     let mut terminal = tui::init()?;
-    let app_result = App::default().run(&mut terminal);
+    App::default().run(&mut terminal)?;
     tui::restore()?;
-    app_result
+    Ok(())
 }
 
-// An App struct that defines the basic state that the application needs: a counter to keep track
-// of the number, and an exit bool that indicates if the application should exit
 #[derive(Debug, Default)]
 pub struct App {
     counter: u8,
     exit: bool,
 }
 
-// An impl of the app struct that defines various methods needed for the app to function
 impl App {
-
-    // Runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut tui::Tui) -> io::Result<()> {
+    /// runs the application's main loop until the user quits
+    pub fn run(&mut self, terminal: &mut tui::Tui) -> Result<()> {
         while !self.exit {
             terminal.draw(|frame| self.render_frame(frame))?;
-            self.handle_events()?;
+            self.handle_events().wrap_err("handle events failed")?;
         }
         Ok(())
     }
 
-    // Renders the frames with a set size: the entire terminal window
     fn render_frame(&self, frame: &mut Frame) {
         frame.render_widget(self, frame.size());
     }
 
-    // Updates the application's state based on user input
-    fn handle_events(&mut self) -> io::Result<()> {
+    /// updates the application's state based on user input
+    fn handle_events(&mut self) -> Result<()> {
         match event::read()? {
-
             // it's important to check that the event is a key press event as
             // crossterm also emits key release and repeat events on Windows.
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
+                self.handle_key_event(key_event).wrap_err_with(|| {
+                    format!("handling key event failed:\n{key_event:#?}")
+                })
             }
-            _ => {}
-        };
-        Ok(())
-    }
-
-    // Handles the various key events that the application supports
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Left => self.decrement_counter(),
-            KeyCode::Right => self.increment_counter(),
-            _ => {}
+            _ => Ok(()),
         }
     }
 
-    // Changes the exit flag to indicate that the application should exit
+    fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            KeyCode::Char('q') => self.exit(),
+            KeyCode::Left => self.decrement_counter()?,
+            KeyCode::Right => self.increment_counter()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn exit(&mut self) {
         self.exit = true;
     }
 
-    // Incrememnts the counter
-    fn increment_counter(&mut self) {
-        self.counter += 1;
+    fn decrement_counter(&mut self) -> Result<()> {
+        self.counter -= 1;
+        Ok(())
     }
 
-    // Decrements the counter
-    fn decrement_counter(&mut self) {
-        self.counter -= 1;
+    fn increment_counter(&mut self) -> Result<()> {
+        self.counter += 1;
+        if self.counter > 2 {
+            bail!("counter overflow");
+        }
+        Ok(())
     }
 }
 
-// An impl of Widget for the App class, this allows all of the rendering to be done seperately from
-// the main App impl, which allows the app itself to be called by the render_widget, simplifying a
-// significant portion of code
 impl Widget for &App {
-
-    // Renders the various UI elements
     fn render(self, area: Rect, buf: &mut Buffer) {
         let title = Title::from(" Counter App Tutorial ".bold());
         let instructions = Title::from(Line::from(vec![
@@ -122,7 +118,6 @@ impl Widget for &App {
     }
 }
 
-// Tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,18 +150,36 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_event() -> io::Result<()> {
+    fn handle_key_event() {
         let mut app = App::default();
-        app.handle_key_event(KeyCode::Right.into());
+        app.handle_key_event(KeyCode::Right.into()).unwrap();
         assert_eq!(app.counter, 1);
 
-        app.handle_key_event(KeyCode::Left.into());
+        app.handle_key_event(KeyCode::Left.into()).unwrap();
         assert_eq!(app.counter, 0);
 
         let mut app = App::default();
-        app.handle_key_event(KeyCode::Char('q').into());
+        app.handle_key_event(KeyCode::Char('q').into()).unwrap();
         assert_eq!(app.exit, true);
+    }
 
-        Ok(())
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn handle_key_event_panic() {
+        let mut app = App::default();
+        let _ = app.handle_key_event(KeyCode::Left.into());
+    }
+
+    #[test]
+    fn handle_key_event_overflow() {
+        let mut app = App::default();
+        assert!(app.handle_key_event(KeyCode::Right.into()).is_ok());
+        assert!(app.handle_key_event(KeyCode::Right.into()).is_ok());
+        assert_eq!(
+            app.handle_key_event(KeyCode::Right.into())
+                .unwrap_err()
+                .to_string(),
+            "counter overflow"
+        );
     }
 }
